@@ -58,14 +58,18 @@ python -m venv venv
 source venv/bin/activate  # Linux/macOS
 # .\venv\Scripts\activate # Windows
 
+---
+
 # Gerekli kütüphaneleri kurun
+```bash
 pip install -r requirements.txt
+
+---
 
 ### Adım 2: Ortam Değişkenlerini Ayarlama
 Projeyi çalıştırmadan önce, klonladığınız dizinde bir .env dosyası oluşturun ve tüm API anahtarlarınızı buraya ekleyin:
 
-Kod snippet'i
-
+```bash
 # .env Dosyası İçeriği
 PINECONE_API_KEY="[BURAYA_PINECONE_ANAHTARINIZI_EKLEYIN]"
 GOOGLE_API_KEY="[BURAYA_GEMINI_API_ANAHTARINIZI_EKLEYIN]"
@@ -73,11 +77,15 @@ GOOGLE_API_KEY="[BURAYA_GEMINI_API_ANAHTARINIZI_EKLEYIN]"
 # Index adı varsayılan olarak 'psychotherapy-rag'dır.
 PINECONE_INDEX="psychotherapy-rag"
 
+---
+
 ### Adım 3: Uygulamayı Başlatma ve İndeksleme
 Uygulama ilk kez başlatıldığında, veri setini otomatik olarak Hugging Face'ten çekecek ve Pinecone'a yükleyecektir. İndeks zaten doluysa bu adım otomatik olarak atlanır.
 
 ```bash
 python app.py
+
+---
 
 ### Adım 4: Chatbot'u Kullanma
 Uygulama çalıştıktan sonra:
