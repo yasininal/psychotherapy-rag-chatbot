@@ -61,3 +61,48 @@ source venv/bin/activate  # Linux/macOS
 # Gerekli kütüphaneleri kurun
 pip install -r requirements.txt
 
+```
+
+### Adım 2: Ortam Değişkenlerini Ayarlama
+
+Projeyi çalıştırmadan önce, klonladığınız dizinde bir **`.env`** dosyası oluşturun ve tüm API anahtarlarınızı buraya ekleyin:
+
+```dotenv
+# .env Dosyası İçeriği
+PINECONE_API_KEY="[BURAYA_PINECONE_ANAHTARINIZI_EKLEYIN]"
+GOOGLE_API_KEY="[BURAYA_GEMINI_API_ANAHTARINIZI_EKLEYIN]"
+
+# Index adı varsayılan olarak 'psychotherapy-rag'dır.
+PINECONE_INDEX="psychotherapy-rag"
+
+```
+
+### Adım 3: Uygulamayı Başlatma ve İndeksleme
+
+Uygulama ilk kez başlatıldığında, veri setini otomatik olarak Hugging Face'ten çekecek ve Pinecone'a yükleyecektir. İndeks zaten doluysa bu adım otomatik olarak atlanır.
+
+```bash
+python app.py
+
+```
+
+### Adım 4: Chatbot'u Kullanma
+
+
+Uygulama çalıştıktan sonra:
+
+Tarayıcınızda local hostunuza gidiniz.
+
+Chat arayüzünde duygu ve sorunlarınızı yazın.
+
+Bot, Pinecone'daki terapötik kayıtlara dayanarak yapılandırılmış (Empati, Analiz, Öneri) yanıtını sunacaktır.
+
+---
+
+🤝 Katkıda Bulunma
+Pull request'ler (Çekme İstekleri) ve issue'lar (Sorunlar) memnuniyetle karşılanır.
+
+Lisans: Bu proje MIT Lisansı ile yayınlanmıştır.
+
+---
+
