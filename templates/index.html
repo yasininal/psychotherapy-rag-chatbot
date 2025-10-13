@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Duygusal Rehber | Chatbot</title>
+    
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;700&display=swap" rel="stylesheet">
+    
+    <style>
+        :root {
+            --primary-color: #5d5d81; /* Mor (Bot rengi) */
+            --secondary-color: #f4f7f6; /* Arkaplan */
+            --user-bubble: #007bff; /* Mavi (Kullanıcı mesajı) */
+            --bot-bubble: #e9ecef; /* Açık gri (Bot mesajı) */
+            --text-color: #212529;
+        }
+
+        body {
+            font-family: 'Roboto', sans-serif;
+            background-color: var(--secondary-color);
+            margin: 0;
+            padding: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+        }
+
+        .chat-container {
+            width: 100%;
+            max-width: 500px;
+            height: 90vh;
+            max-height: 800px;
+            background: #fff;
+            box-shadow: 0 0 20px rgba(0, 0, 0, 0.1);
+            border-radius: 10px;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        /* Başlık ve Uyarı Alanı */
+        .chat-header {
+            padding: 15px;
+            background-color: var(--primary-color);
+            color: white;
+            text-align: center;
+            font-weight: 700;
+            font-size: 1.1em;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+        .disclaimer-small {
+            background-color: #fff3cd;
+            color: #664d03;
+            padding: 8px;
+            font-size: 0.8em;
+            text-align: center;
+        }
+
+        /* Mesaj Akışı Alanı */
+        .chat-messages {
+            flex-grow: 1;
+            padding: 20px 15px;
+            overflow-y: auto;
+            scroll-behavior: smooth;
+        }
+        
+        /* Mesaj Baloncuğu Stilleri */
+        .message {
+            display: flex;
+            margin-bottom: 15px;
+        }
+        .message.user {
+            justify-content: flex-end;
+        }
+        .message.bot {
+            justify-content: flex-start;
+        }
+        .message-bubble {
+            max-width: 80%;
+            padding: 10px 15px;
+            border-radius: 20px;
+            line-height: 1.4;
+            color: white;
+            word-wrap: break-word;
+            box-shadow: 0 1px 1px rgba(0, 0, 0, 0.05);
+        }
+        .message.user .message-bubble {
+            background-color: var(--user-bubble);
+            border-bottom-right-radius: 5px;
+            color: white;
+        }
+        .message.bot .message-bubble {
+            background-color: var(--bot-bubble);
+            border-bottom-left-radius: 5px;
+            color: var(--text-color);
+        }
+
+        /* Giriş Formu */
+        .chat-input {
+            padding: 15px;
+            border-top: 1px solid #ccc;
+            display: flex;
+            background-color: #fff;
+        }
+        .chat-input textarea {
+            flex-grow: 1;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 20px;
+            resize: none;
+            margin-right: 10px;
+            font-size: 1em;
+            height: 40px;
+            box-sizing: border-box;
+        }
+        .chat-input button {
+            background-color: var(--primary-color);
+            color: white;
+            border: none;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            cursor: pointer;
+            transition: background-color 0.3s;
+            font-size: 1.2em;
+            line-height: 1;
+        }
+        .chat-input button:hover:not(:disabled) {
+            background-color: #4a4e69;
+        }
+        .chat-input button:disabled {
+            background-color: #b0b0b0;
+            cursor: not-allowed;
+        }
+        
+        /* Markdown Stilleri (Yanıtın Okunurluğunu Artırmak İçin) */
+        .message.bot .message-bubble h1, 
+        .message.bot .message-bubble h2, 
+        .message.bot .message-bubble h3 {
+            color: var(--primary-color);
+            font-size: 1.1em;
+            margin-top: 10px;
+            margin-bottom: 5px;
+            border-bottom: 1px dashed #d0d0d0;
+            padding-bottom: 3px;
+        }
+        .message.bot .message-bubble strong {
+            color: var(--primary-color);
+        }
+        .message.bot .message-bubble ul {
+            padding-left: 20px;
+            margin-top: 5px;
+        }
+    </style>
+</head>
+<body>
+
+<div class="chat-container">
+    <div class="chat-header">
+        AI DUYGUSAL REHBER
+    </div>
+    <div class="disclaimer-small">
+        ⚠️ **Sorumluluk Reddi:** Lisanslı bir terapist DEĞİLDİR.
+    </div>
+
+    <div class="chat-messages" id="chat-messages">
+        <div class="message bot">
+            <div class="message-bubble">
+                Merhaba! Ben BDT ilkeleriyle çalışan yapay zeka destekli duygusal rehberinizim. İçinizden geçenleri, sizi zorlayan durumu veya hislerinizi dürüstçe yazabilirsiniz. Sizi dinlemek için buradayım.
+            </div>
+        </div>
+    </div>
+
+    <div class="chat-input">
+        <textarea id="user-input" placeholder="Düşüncelerinizi buraya yazın..." onkeydown="handleKeyPress(event)"></textarea>
+        <button onclick="askQuestion()" id="send-button">➔</button>
+    </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+<script>
+    const chatMessages = document.getElementById('chat-messages');
+    const inputElement = document.getElementById('user-input');
+    const sendButton = document.getElementById('send-button');
+
+    // Enter tuşuna basıldığında soru sormayı sağlar
+    function handleKeyPress(event) {
+        if (event.key === 'Enter' && !event.shiftKey) {
+            event.preventDefault(); // Yeni satıra geçmeyi engelle
+            askQuestion();
+        }
+    }
+
+    // Mesajı akışa ekleyen yardımcı fonksiyon
+    function appendMessage(text, sender) {
+        const messageDiv = document.createElement('div');
+        messageDiv.classList.add('message', sender);
+
+        const bubble = document.createElement('div');
+        bubble.classList.add('message-bubble');
+
+        if (sender === 'bot') {
+            // Bot mesajları Markdown olarak işlenir
+            bubble.innerHTML = marked.parse(text);
+        } else {
+            // Kullanıcı mesajları sade metindir
+            bubble.textContent = text;
+        }
+
+        messageDiv.appendChild(bubble);
+        chatMessages.appendChild(messageDiv);
+        
+        // Otomatik aşağı kaydırma
+        chatMessages.scrollTop = chatMessages.scrollHeight;
+    }
+
+    // API'ye soruyu gönderme işlevi
+    async function askQuestion() {
+        const query = inputElement.value.trim();
+
+        if (!query) return;
+
+        // 1. Kullanıcı mesajını ekle ve temizle
+        appendMessage(query, 'user');
+        inputElement.value = '';
+
+        // 2. Butonu devre dışı bırak ve yükleme mesajı göster
+        sendButton.disabled = true;
+        sendButton.innerHTML = '...';
+        
+        // Yükleme balonu (sadece görsel geri bildirim için)
+        const loadingMessage = document.createElement('div');
+        loadingMessage.classList.add('message', 'bot');
+        loadingMessage.innerHTML = '<div class="message-bubble loading">... Rehber Düşünüyor ...</div>';
+        chatMessages.appendChild(loadingMessage);
+        chatMessages.scrollTop = chatMessages.scrollHeight;
+
+
+        try {
+            const response = await fetch('/ask', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ question: query })
+            });
+
+            const data = await response.json();
+
+            // Yükleme balonunu kaldır
+            chatMessages.removeChild(loadingMessage);
+
+
+            if (response.ok) {
+                appendMessage(data.answer, 'bot');
+            } else {
+                appendMessage(`[HATA] Sunucu yanıtı işleyemedi: ${data.answer}`, 'bot');
+            }
+
+        } catch (error) {
+            // Eğer yükleme balonu hala varsa kaldır
+            if (chatMessages.lastChild.classList.contains('loading')) {
+                chatMessages.removeChild(chatMessages.lastChild);
+            }
+            appendMessage("API bağlantı hatası oluştu. Lütfen sunucu loglarını kontrol edin.", 'bot');
+            console.error('Fetch Hatası:', error);
+        } finally {
+            // Butonu tekrar etkinleştir ve metin kutusunu odakla
+            sendButton.disabled = false;
+            sendButton.innerHTML = '➔';
+            inputElement.focus();
+        }
+    }
+</script>
+
+</body>
+</html>

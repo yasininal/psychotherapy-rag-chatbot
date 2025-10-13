@@ -1,0 +1,19 @@
+# Python Sanal Ortamları ve Cache
+venv/
+__pycache__/
+.pytest_cache/
+
+# Hassas API Anahtarları
+.env 
+
+# Model Ağırlıkları ve Embeddings Cache
+*.pt
+*.bin
+*.npy
+*.safetensors
+.huggingface/
+.cache/
+
+# Flask/Gunicorn Log ve Çalışma Dosyaları
+*.log
+gunicorn.pid
