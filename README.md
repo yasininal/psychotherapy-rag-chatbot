@@ -98,9 +98,6 @@ Chat arayüzünde duygu ve sorunlarınızı yazın.
 Bot, Pinecone'daki terapötik kayıtlara dayanarak yapılandırılmış (Empati, Analiz, Öneri) yanıtını sunacaktır.
 
 ---
----
----
----
 
 🤝 Katkıda Bulunma
 Pull request'ler (Çekme İstekleri) ve issue'lar (Sorunlar) memnuniyetle karşılanır.
