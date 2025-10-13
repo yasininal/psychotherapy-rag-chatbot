@@ -60,3 +60,4 @@ source venv/bin/activate  # Linux/macOS
 
 # Gerekli kütüphaneleri kurun
 pip install -r requirements.txt
+
