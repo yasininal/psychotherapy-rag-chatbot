@@ -267,4 +267,8 @@ def ask_question():
 
 if __name__ == "__main__":
     # Bu blok Gunicorn tarafından yoksayılır ancak yerel testler için kalır.
-    app.run(debug=True, host="0.0.0.0", port=5000)
+    import os
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 10000))  # Render'ın verdiği PORT değerini al
+    app.run(host="0.0.0.0", port=port)
