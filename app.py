@@ -266,5 +266,6 @@ def ask_question():
 
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))  # Render'ın verdiği PORT değişkenini al, yoksa 10000 kullan
+    port = int(os.environ.get("PORT", 5000))  # Render’ın verdiği PORT değişkenini al
     app.run(host="0.0.0.0", port=port)
+
