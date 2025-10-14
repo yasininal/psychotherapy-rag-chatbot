@@ -264,9 +264,7 @@ def ask_question():
             "answer": f"API veya Sunucu Hatası: İşlem sırasında beklenmeyen bir hata oluştu ({type(e).__name__})."
         }), 500
 
-'''
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))  # Render'ın verdiği PORT değişkenini al, yoksa 10000 kullan
-    app.run(debug=False, host="0.0.0.0", port=port)
-
-'''
+    app.run(host="0.0.0.0", port=port)
