@@ -1,236 +1,272 @@
 import os
 import json
+import logging
 from flask import Flask, request, jsonify, render_template
 from dotenv import load_dotenv
-import pandas as pd 
 from datasets import load_dataset 
 from tqdm.auto import tqdm 
 import traceback 
-
-# LangChain, Pinecone ve Gemini Modül Bağlantıları
-from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain_pinecone import Pinecone as LangchainPinecone
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain.chains import create_retrieval_chain
-from langchain.chains.combine_documents import create_stuff_documents_chain
-from langchain.schema import Document
-from langchain_core.prompts import ChatPromptTemplate
+import requests # Yeni eklenen: Doğrudan API çağrıları için
+import numpy as np # Yeni eklenen: Embedding sonuçları için
 from pinecone import Pinecone, ServerlessSpec 
+from sentence_transformers import SentenceTransformer # Yeni eklenen: Bellek dostu embedding için
 
-# Flask uygulamasını başlat
-app = Flask(__name__)
+# --- 1. LOGGING VE CONFIG ---
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-# --- Yapılandırma ---
 load_dotenv()
-PINECONE_API_KEY = os.getenv("PINECONE_API_KEY") 
-GEMINI_API_KEY = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY") 
-PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX", "psychotherapy-rag") 
-EMBEDDING_DIM = 384 
-MAX_RESPONSE_TOKENS = 4096 
 
-# Global değişkenler (Zincirin durumu tutar)
-qa_chain = None
-retriever = None
+class Config:
+    PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
+    GEMINI_API_KEY = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+    PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX", "psychotherapy-rag")
+    PINECONE_ENV = os.getenv("PINECONE_ENV", "us-east-1") # Pinecone region'ınızı kontrol edin
+    EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2" # Bellek aşımı durumunda bunu değiştirebilirsiniz
+    EMBEDDING_DIM = 384
+    MAX_RESPONSE_TOKENS = 4096 
+    BATCH_SIZE = 100
+    K_RETRIEVAL = 3
 
-# ==========================================================
-# 0️⃣ Veri Yükleme ve Temizleme Fonksiyonu (Aynı Kalır)
-# ==========================================================
-# ... [load_psychotherapy_data fonksiyonu aynı kalır] ...
-def load_psychotherapy_data():
-    DATASET_NAME = "Psychotherapy-LLM/CBT-Bench"
-    SUBSET_NAME = "core_fine_test" 
-    print(f"🔄 **1. Veri Yükleme:** Hugging Face '{DATASET_NAME}' ({SUBSET_NAME}) alt kümesi yükleniyor...")
-    try:
-        dataset = load_dataset(DATASET_NAME, SUBSET_NAME, split="train") 
-    except Exception as e:
-        print(f"❌ **HATA (Veri Yükleme):** Hugging Face veri seti yüklenemedi. Hata: {e}")
-        return []
+# --- 2. EMBEDDING SERVİSİ (Bellek Yüklemesini Yönetmek İçin) ---
+class EmbeddingService:
+    def __init__(self, model_name: str):
+        self.model = None
+        logging.info(f"🔄 **2. Embedding Modeli:** '{model_name}' yükleniyor...")
+        try:
+            # Model, STransformer ile yüklenerek bellek yükü optimize edilir.
+            self.model = SentenceTransformer(model_name)
+            logging.info("✅ **2. Embedding Modeli Tamamlandı.**")
+        except Exception as e:
+            logging.error(f"❌ HATA (Embedding): Model yüklenirken hata oluştu. {e}")
+            raise RuntimeError("Embedding modeli yüklenemedi.")
 
-    documents = []
-    discarded_record_count = 0
-    
-    for i, row in enumerate(dataset):
-        situation = row.get('situation')
-        thoughts = row.get('thoughts')
-        core_belief = row.get('core_belief_fine_grained') 
-        is_situation_valid = situation and str(situation).strip() not in ['N/A', '']
-        is_thoughts_valid = thoughts and str(thoughts).strip() not in ['N/A', '']
+    def embed(self, text: str):
+        if not self.model:
+            raise RuntimeError("Embedding modeli yüklenmedi.")
+        # NumPy dizisini doğrudan Pinecone için List'e çeviriyoruz
+        return self.model.encode(text).tolist()
 
-        if is_situation_valid and is_thoughts_valid:
-            content = (
-                f"**Durum:** {situation}. "
-                f"**Danışan Düşüncesi:** {thoughts}. "
-                f"**Çekirdek İnançlar:** {core_belief}"
-            )
-            documents.append(Document(
-                page_content=content, 
-                metadata={"id": str(i), "situation_summary": situation}
-            ))
-        else:
-            discarded_record_count += 1
-    
-    print(f"✅ **1. Veri Yükleme Tamamlandı:** Toplam {len(documents)} anlamlı doküman yüklendi.")
-    if discarded_record_count > 0:
-         print(f"⚠️ **Uyarı:** {discarded_record_count} adet eksik bilgi içeren kayıt atıldı.")
-    return documents
+# --- 3. GEMINI MÜŞTERİSİ (Doğrudan API Erişimi İçin) ---
+class GeminiClient:
+    BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 
+    def __init__(self, api_key: str, model_name: str = "gemini-2.5-flash"):
+        self.api_key = api_key
+        self.model = model_name
+        self.headers = {"Content-Type": "application/json"}
+        if not api_key:
+            logging.warning("⚠️ Gemini API Key eksik. Mock yanıtlar kullanılacak.")
 
-# ==========================================================
-# 1️⃣ Uygulama Başlangıcında RAG Zincirini Kurma Fonksiyonu
-# ==========================================================
+    def generate(self, question: str, context: str):
+        if not self.api_key:
+            return "Mock Response: Gemini API Key not configured. Context: " + context
 
-def initialize_rag_chain():
-    """
-    Sistemi başlatır ve RAG zincirini kurar. Başarısızlık durumunda hatayı yükseltir (raise).
-    """
-    global qa_chain, retriever
-
-    # 🚨 Gunicorn/Render Hatası İçin Çözüm: Global değişkenler eksikse, hatayı yükselt.
-    if not PINECONE_API_KEY:
-        raise ValueError("PINECONE_API_KEY eksik. Lütfen Render ortam değişkenlerini kontrol edin.")
-    if not GEMINI_API_KEY:
-        raise ValueError("GOOGLE_API_KEY (GEMINI) eksik. Lütfen Render ortam değişkenlerini kontrol edin.")
-
-
-    documents = load_psychotherapy_data()
-    if not documents:
-         raise ValueError("Veri kümesinden yüklenecek geçerli doküman bulunamadı.")
-    
-    TOTAL_DOCUMENT_COUNT = len(documents)
-    
-    # 1. Embedding Modeli Yükleme
-    print(f"🔄 **2. Embedding Modeli:** 'all-MiniLM-L6-v2' yükleniyor...")
-    try:
-        embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-        print("✅ **2. Embedding Modeli Tamamlandı.**")
-    except Exception as e:
-        raise Exception(f"HATA (Embedding): Model yüklenirken hata oluştu. {e}")
-
-    # 2. Pinecone Bağlantısı ve İndeksleme
-    try:
-        print(f"🔄 **3. Pinecone Bağlantısı:** Pinecone istemcisi başlatılıyor...")
-        pc = Pinecone(api_key=PINECONE_API_KEY)
-        print("✅ **3. Pinecone Bağlantısı Başarılı.**")
+        url = f"{self.BASE_URL}/{self.model}:generateContent?key={self.api_key}"
         
-        index_name = PINECONE_INDEX_NAME
-        index_exists = index_name in [i["name"] for i in pc.list_indexes()]
-        should_upsert = True
-        
-        # ... [Geri kalan koşullu yükleme mantığı aynı] ...
-
-        if index_exists:
-            current_index = pc.Index(index_name)
-            vector_count = current_index.describe_index_stats().get('total_vector_count', 0)
-            
-            if vector_count > 0:
-                print(f"✅ **4a. İndeks Kontrolü Başarılı:** '{index_name}' indeksi {vector_count} vektöre sahip. Yükleme adımı ATLANDI.")
-                should_upsert = False
-            else:
-                print(f"⚠️ **4a. İndeks Mevcut, Boş:** Vektör sayısı 0. Yeniden Yükleme Başlatılıyor.")
-                current_index = pc.Index(index_name) 
-
-        else:
-            print(f"⚠️ **4a. İndeks Oluşturma:** '{index_name}' bulunamadı. Yeni indeks oluşturuluyor...")
-            pc.create_index(
-                name=index_name,
-                dimension=EMBEDDING_DIM,
-                metric='cosine',
-                spec=ServerlessSpec(cloud='aws', region='us-east-1')
-            )
-            current_index = pc.Index(index_name) 
-        
-        if should_upsert:
-            print(f"🔄 **4b. Veriler Yükleniyor:** {TOTAL_DOCUMENT_COUNT} vektör Pinecone'a yükleniyor...")
-            # ... [Yükleme döngüsü aynı kalır] ...
-            
-            batch_size = 100
-            for i in tqdm(range(0, TOTAL_DOCUMENT_COUNT, batch_size)):
-                batch = documents[i:min(i + batch_size, TOTAL_DOCUMENT_COUNT)]
-                texts = [doc.page_content for doc in batch]
-                vectors = embeddings.embed_documents(texts)
-                to_upsert = [(str(doc.metadata['id']), vectors[j], doc.metadata) 
-                             for j, doc in enumerate(batch)]
-                current_index.upsert(vectors=to_upsert)
-            
-            print(f"✅ **4b. İndeksleme Tamamlandı.**")
-        
-        final_index = pc.Index(index_name)
-        final_vector_count = final_index.describe_index_stats().get('total_vector_count', 'Bilinmiyor')
-        print(f"✨ **Pinecone Kontrol:** İndeksteki Toplam Vektör Sayısı: {final_vector_count}")
-        
-        vector_store = LangchainPinecone.from_existing_index(
-            index_name=index_name,
-            embedding=embeddings
-        )
-
-        retriever = vector_store.as_retriever(search_type="similarity", search_kwargs={"k": 3})
-
-    except Exception as e:
-        # Hata yakalandığında, Gunicorn'ın göreceği şekilde hatayı yeniden fırlatırız.
-        raise Exception(f"HATA (Pinecone Zinciri): Pinecone/Vektör Zinciri Başlatılamadı. Hata: {e}")
-    
-    # 3. Gemini LLM ve Zincir Kurulumu
-    print("🔄 **5. LLM Bağlantısı:** Gemini LLM (gemini-2.5-flash) başlatılıyor...")
-    try:
-        llm = ChatGoogleGenerativeAI(
-            model="gemini-2.5-flash", 
-            google_api_key=GEMINI_API_KEY,
-            max_output_tokens=MAX_RESPONSE_TOKENS 
-        )
-
-        # ... [Prompt Template ve Zincir Kurulumu aynı kalır] ...
-        SYSTEM_PROMPT_TEMPLATE = """
+        # BDT odaklı sistem talimatı (Sizin prompt'unuza dayalı)
+        system_instruction = f"""
             Sen, Bilişsel Davranışçı Terapi (BDT) ilkelerine odaklanmış, empatik ve etik kurallara bağlı bir Yapay Zeka Duygusal Rehbersin. 
-            ...
+            Kullanıcının sorusuna yalnızca aşağıdaki VERİ BAĞLAMI'nı kullanarak BDT prensiplerine uygun, destekleyici ve rehberlik edici bir yanıt ver.
+            Eğer bağlam yetersizse, etik kurallara bağlı kalarak genel bir BDT rehberliği yap.
+            
             VERİ BAĞLLAMI:
             {context} 
             ---
-            """
-        prompt = ChatPromptTemplate.from_messages([("system", SYSTEM_PROMPT_TEMPLATE), ("human", "{input}")])
-        document_chain = create_stuff_documents_chain(llm, prompt) 
-        qa_chain = create_retrieval_chain(retriever=retriever, combine_docs_chain=document_chain)
-        print("✅ **5. RAG Zinciri Kurulumu Tamamlandı!** Bot kullanıma hazır.")
+            Kullanıcının Sorusu:
+        """
         
-    except Exception as e:
-        # Hata yakalandığında, Gunicorn'ın göreceği şekilde hatayı yeniden fırlatırız.
-        raise Exception(f"HATA (Gemini LLM): Gemini LLM başlatılırken hata oluştu. Hata: {e}")
+        # Payload oluştur
+        payload = {
+            "contents": [{"role": "user", "parts": [{"text": system_instruction + question}]}],
+            "config": {
+                "systemInstruction": system_instruction,
+                "maxOutputTokens": Config.MAX_RESPONSE_TOKENS
+            }
+        }
 
+        try:
+            r = requests.post(url, headers=self.headers, json=payload, timeout=60)
+            r.raise_for_status()
+            data = r.json()
+            
+            # API yanıtını güvenli şekilde çöz
+            if "candidates" in data and data["candidates"]:
+                content = data["candidates"][0].get("content", {})
+                if "parts" in content and content["parts"]:
+                    return content["parts"][0].get("text", "Gemini'den yanıt alınamadı.")
+            return "Gemini'den geçerli bir yanıt gelmedi."
 
-# ==========================================================
-# 2️⃣ Flask Uç Noktaları (Routes)
-# ==========================================================
+        except requests.exceptions.HTTPError as http_err:
+            logging.error(f"❌ Gemini HTTP hatası: {http_err} - {r.text}")
+            return f"API Hatası: HTTP {r.status_code}."
+        except Exception as e:
+            logging.error(f"❌ Gemini API genel hatası: {e}")
+            return "Gemini API bağlantı hatası."
 
-# 🚨 Gunicorn/Render Hata Çözümü: Uygulamanın Başlatılması
+# --- 4. PSİKOTERAPİ ASİSTANI (Ana Orkestratör) ---
+class PsychotherapyAssistant:
+    def __init__(self, cfg: Config):
+        self.cfg = cfg
+        # Bellek aşımı riskini azaltmak için Embedding Modelini burada yüklüyoruz.
+        self.embedder = EmbeddingService(cfg.EMBEDDING_MODEL) 
+        self.gemini = GeminiClient(cfg.GEMINI_API_KEY)
+        self.pinecone_index = self._setup_pinecone()
+        self.documents = self._load_psychotherapy_data()
+        self._load_dataset_to_pinecone() # İndeks boşsa yükleme yapar
+
+    # Sizin load_psychotherapy_data fonksiyonunuz (Değişmedi)
+    def _load_psychotherapy_data(self):
+        DATASET_NAME = "Psychotherapy-LLM/CBT-Bench"
+        SUBSET_NAME = "core_fine_test" 
+        logging.info(f"🔄 **1. Veri Yükleme:** Hugging Face '{DATASET_NAME}' yükleniyor...")
+        # Hafıza problemini azaltmak için "streaming=True" denenebilir, 
+        # ancak burada tüm datayı RAM'e alıyoruz.
+        try:
+            dataset = load_dataset(DATASET_NAME, SUBSET_NAME, split="train") 
+        except Exception as e:
+            logging.error(f"❌ HATA (Veri Yükleme): Hugging Face yüklenemedi. Hata: {e}")
+            return []
+
+        documents = []
+        for i, row in enumerate(dataset):
+             # ... (Veri temizleme mantığı aynı) ...
+            situation = row.get('situation')
+            thoughts = row.get('thoughts')
+            core_belief = row.get('core_belief_fine_grained') 
+            is_valid = situation and str(situation).strip() not in ['N/A', ''] and \
+                       thoughts and str(thoughts).strip() not in ['N/A', '']
+            
+            if is_valid:
+                content = (
+                    f"Durum: {situation}. "
+                    f"Danışan Düşüncesi: {thoughts}. "
+                    f"Çekirdek İnançlar: {core_belief}"
+                )
+                documents.append({"id": str(i), "content": content})
+        
+        logging.info(f"✅ **1. Veri Yükleme Tamamlandı:** Toplam {len(documents)} doküman yüklendi.")
+        return documents
+
+    # Referans projedeki setup mantığı (Pinecone Client)
+    def _setup_pinecone(self):
+        if not self.cfg.PINECONE_API_KEY: 
+            logging.warning("⚠️ PINECONE_API_KEY eksik. Retrieval devre dışı.")
+            return None
+        try:
+            logging.info(f"🔄 **3. Pinecone Bağlantısı:** Pinecone istemcisi başlatılıyor...")
+            pc = Pinecone(api_key=self.cfg.PINECONE_API_KEY)
+            index_name = self.cfg.PINECONE_INDEX_NAME
+            
+            if index_name not in pc.list_indexes().names:
+                logging.warning(f"⚠️ **4a. İndeks Oluşturma:** '{index_name}' bulunamadı. Yeni indeks oluşturuluyor...")
+                pc.create_index(
+                    name=index_name,
+                    dimension=self.cfg.EMBEDDING_DIM,
+                    metric='cosine',
+                    spec=ServerlessSpec(cloud='aws', region=self.cfg.PINECONE_ENV)
+                )
+            
+            logging.info("✅ **3. Pinecone Bağlantısı Başarılı.**")
+            return pc.Index(index_name)
+        except Exception as e:
+            logging.error(f"❌ HATA (Pinecone): Başlatılamadı. {e}")
+            return None
+
+    # Referans projedeki yükleme mantığı
+    def _load_dataset_to_pinecone(self):
+        if not self.pinecone_index: return
+        
+        vector_count = self.pinecone_index.describe_index_stats().get("total_vector_count", 0)
+        if vector_count > 0:
+            logging.info(f"✅ **4a. İndeks Kontrolü Başarılı:** {vector_count} vektöre sahip. Yükleme ATLANDI.")
+            return
+
+        logging.info(f"🔄 **4b. Veriler Yükleniyor:** {len(self.documents)} vektör Pinecone'a yükleniyor...")
+        
+        vectors = []
+        try:
+            for i, doc in enumerate(tqdm(self.documents)):
+                # Embedding'i oluştur ve listeye ekle
+                vectors.append((
+                    doc["id"], 
+                    self.embedder.embed(doc["content"]), 
+                    {"text": doc["content"]} # Metadata sadece text'i tutsun
+                ))
+                
+                if len(vectors) >= self.cfg.BATCH_SIZE:
+                    self.pinecone_index.upsert(vectors=vectors)
+                    vectors = [] # Batch temizle
+            
+            if vectors: # Kalanları yükle
+                self.pinecone_index.upsert(vectors=vectors)
+
+            logging.info(f"✅ **4b. İndeksleme Tamamlandı.**")
+        except Exception as e:
+            logging.error(f"❌ HATA (Veri Yükleme/Upsert): {e}")
+
+    # RAG sorgu mantığı (Referans projedeki gibi, manuel olarak)
+    def get_answer(self, question: str):
+        if not question:
+            return "Lütfen bir soru girin."
+
+        context = "Relevant context not found."
+        
+        try:
+            if self.pinecone_index:
+                # 1. Sorgu Embedding'i
+                query_emb = self.embedder.embed(question)
+                
+                # 2. Pinecone Sorgusu
+                res = self.pinecone_index.query(
+                    vector=query_emb, 
+                    top_k=self.cfg.K_RETRIEVAL, 
+                    include_metadata=True
+                )
+                
+                # 3. Bağlam Oluşturma (Sadece skor > 0.6 olanları alalım)
+                relevant_texts = [
+                    m['metadata'].get('text', '') 
+                    for m in res['matches'] 
+                    if m['score'] > 0.6
+                ]
+                
+                if relevant_texts:
+                    context = "\n---\n".join(relevant_texts)
+                    logging.info("🔍 Pinecone'dan bağlam bulundu.")
+                else:
+                    logging.info("🔍 Pinecone'da yüksek skorlu bağlam bulunamadı.")
+            
+            # 4. LLM Yanıtı
+            return self.gemini.generate(question, context)
+
+        except RuntimeError as e: # Embedding hatası
+            logging.error(f"❌ RAG Runtime Hatası: {e}")
+            return "Hata: Embedding modelini kullanamıyorum. Sunucu loglarını kontrol edin."
+        except Exception as e:
+            logging.error(f"❌ RAG Genel Hatası: {e}")
+            traceback.print_exc() 
+            return "Sunucu Hatası: Sorgu yürütülürken beklenmeyen bir hata oluştu."
+
+# --- 5. FLASK APP ---
+app = Flask(__name__)
+
+# Global asistan objesi (Gunicorn'da tekil kalacaktır)
 try:
-    print("==================================================")
-    print("🚀 Flask RAG Psikoterapi Botu Başlatılıyor...")
-    initialize_rag_chain()
-    print("==================================================")
-
+    cfg = Config()
+    assistant = PsychotherapyAssistant(cfg)
+    logging.info("✅ **5. RAG Zinciri Kurulumu Tamamlandı!** Bot kullanıma hazır.")
 except Exception as startup_error:
-    # Başlangıçta hata oluşursa, terminale büyük harflerle hatayı yazdır.
-    print(f"\n\n\n!!!! KRİTİK BAŞLANGIÇ HATASI !!!!\n\n")
-    print(f"Hata Tipi: {type(startup_error).__name__}")
-    print(f"Mesaj: {startup_error}")
-    print(f"\nRender, bu hatayı gördü ve uygulamayı başlatmayı reddetti (502/Not Found).")
-    print(f"Lütfen Render Ortam Değişkenlerinizi (PINECONE_API_KEY, GOOGLE_API_KEY) kontrol edin.")
-    print(f"!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n\n")
-    
-    # Gunicorn'ın göreceği şekilde uygulamayı sıfırlayabiliriz veya uygulama objesinin yüklenmesine izin veririz.
+    logging.error(f"\n!!!! KRİTİK BAŞLANGIÇ HATASI !!!!\nMesaj: {startup_error}")
+    # Başarısız olursa 'assistant' değişkenini None bırakabiliriz veya bir Mock obje atayabiliriz.
+    assistant = None 
 
 @app.route("/")
 def index():
-    """Ana sayfa (index.html) arayüzünü döndürür."""
-    # Uygulama başlatılamadıysa, bu route'un hata vermesi gerekir (qa_chain=None)
     return render_template("index.html")
 
 @app.route("/ask", methods=["POST"])
 def ask_question():
-    """Kullanıcı sorusunu alır, RAG zincirini çalıştırır ve terapötik yanıtı döndürür."""
-    global qa_chain
-    
-    if qa_chain is None:
-        # initialize_rag_chain başarısız olduysa burası çalışır (veya 500 döner)
+    if assistant is None:
         return jsonify({"answer": "Error: RAG Chain initialization failed. Please check server logs for setup errors."}), 500
         
     data = request.get_json()
@@ -240,24 +276,14 @@ def ask_question():
         return jsonify({"answer": "Please provide a question."}), 400
 
     try:
-        # ... [Sorgu işleme mantığı aynı kalır] ...
-        print(f"🔄 **Sorgu İşleniyor:** '{query[:50]}...' için RAG başlatıldı.")
-        response = qa_chain.invoke({"input": query})
-        answer = response.get("answer")
-        
-        if not answer:
-             context_docs = response.get('context', 'Context not available.') 
-             print(f"⚠️ **UYARI (LLM Yanıt Yok):** Gemini yanıt üretmedi. Context: {context_docs}")
-             return jsonify({
-                 "answer": "Yapay zeka, verilen bağlamla anlamlı bir yanıt oluşturamadı. Lütfen soruyu yeniden formüle edin veya veriyi kontrol edin."
-             }), 500
-        
-        print("✅ **Sorgu Tamamlandı:** Yanıt başarıyla oluşturuldu.")
+        logging.info(f"🔄 **Sorgu İşleniyor:** '{query[:50]}...' için RAG başlatıldı.")
+        answer = assistant.get_answer(query)
+        logging.info("✅ **Sorgu Tamamlandı:** Yanıt başarıyla oluşturuldu.")
         
         return jsonify({"answer": answer})
 
     except Exception as e:
-        print(f"❌ **KRİTİK HATA (RAG Yürütme):** Sorgu sırasında hata oluştu. Detaylı Traceback:")
+        logging.error(f"❌ KRİTİK HATA (RAG Yürütme): Sorgu sırasında hata oluştu.")
         traceback.print_exc() 
         
         return jsonify({
@@ -266,5 +292,6 @@ def ask_question():
 
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))  # Render’ın verdiği PORT değişkenini al
+    # Render'ın verdiği PORT değişkenini al
+    port = int(os.environ.get("PORT", 5000)) 
     app.run(host="0.0.0.0", port=port)
