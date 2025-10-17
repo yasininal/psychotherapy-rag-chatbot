@@ -1,15 +1,15 @@
 import os
-import json
 import logging
+import random
+import requests
+import numpy as np
 from flask import Flask, request, jsonify, render_template
 from dotenv import load_dotenv
 from datasets import load_dataset 
 from tqdm.auto import tqdm 
 import traceback 
-import requests # Yeni eklenen: Doğrudan API çağrıları için
-import numpy as np # Yeni eklenen: Embedding sonuçları için
 from pinecone import Pinecone, ServerlessSpec 
-from sentence_transformers import SentenceTransformer # Yeni eklenen: Bellek dostu embedding için
+from sentence_transformers import SentenceTransformer 
 
 # --- 1. LOGGING VE CONFIG ---
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -18,16 +18,21 @@ load_dotenv()
 
 class Config:
     PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
+    # Gemini API anahtarı için her iki ortam değişkenini de kontrol et
     GEMINI_API_KEY = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
     PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX", "psychotherapy-rag")
-    PINECONE_ENV = os.getenv("PINECONE_ENV", "us-east-1") # Pinecone region'ınızı kontrol edin
-    EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2" # Bellek aşımı durumunda bunu değiştirebilirsiniz
+    # Pinecone bölgenizi kontrol edin. Kariyer Botu'ndaki gibi 'us-east-1' varsayılır.
+    PINECONE_ENV = os.getenv("PINECONE_ENV", "us-east-1") 
+    
+    # BELLEK OPTİMİZASYONU: Daha küçük bir model kullanıyoruz.
+    EMBEDDING_MODEL = "sentence-transformers/paraphrase-MiniLM-L3-v2" # Boyut 384'tür.
     EMBEDDING_DIM = 384
+    
     MAX_RESPONSE_TOKENS = 4096 
     BATCH_SIZE = 100
-    K_RETRIEVAL = 3
+    K_RETRIEVAL = 3 # Kaç doküman getirileceği
 
-# --- 2. EMBEDDING SERVİSİ (Bellek Yüklemesini Yönetmek İçin) ---
+# --- 2. EMBEDDING SERVİSİ (Hafif Model Yüklemesi) ---
 class EmbeddingService:
     def __init__(self, model_name: str):
         self.model = None
@@ -38,7 +43,7 @@ class EmbeddingService:
             logging.info("✅ **2. Embedding Modeli Tamamlandı.**")
         except Exception as e:
             logging.error(f"❌ HATA (Embedding): Model yüklenirken hata oluştu. {e}")
-            raise RuntimeError("Embedding modeli yüklenemedi.")
+            raise RuntimeError("Embedding modeli yüklenemedi. Bellek limitini kontrol edin.")
 
     def embed(self, text: str):
         if not self.model:
@@ -46,7 +51,7 @@ class EmbeddingService:
         # NumPy dizisini doğrudan Pinecone için List'e çeviriyoruz
         return self.model.encode(text).tolist()
 
-# --- 3. GEMINI MÜŞTERİSİ (Doğrudan API Erişimi İçin) ---
+# --- 3. GEMINI MÜŞTERİSİ (Kariyer Botu'ndan alınan sade Gemini API yapısı) ---
 class GeminiClient:
     BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 
@@ -54,8 +59,6 @@ class GeminiClient:
         self.api_key = api_key
         self.model = model_name
         self.headers = {"Content-Type": "application/json"}
-        if not api_key:
-            logging.warning("⚠️ Gemini API Key eksik. Mock yanıtlar kullanılacak.")
 
     def generate(self, question: str, context: str):
         if not self.api_key:
@@ -63,7 +66,7 @@ class GeminiClient:
 
         url = f"{self.BASE_URL}/{self.model}:generateContent?key={self.api_key}"
         
-        # BDT odaklı sistem talimatı (Sizin prompt'unuza dayalı)
+        # Sizin orijinal BDT odaklı sistem talimatınızın sadeleştirilmiş hali
         system_instruction = f"""
             Sen, Bilişsel Davranışçı Terapi (BDT) ilkelerine odaklanmış, empatik ve etik kurallara bağlı bir Yapay Zeka Duygusal Rehbersin. 
             Kullanıcının sorusuna yalnızca aşağıdaki VERİ BAĞLAMI'nı kullanarak BDT prensiplerine uygun, destekleyici ve rehberlik edici bir yanıt ver.
@@ -72,12 +75,11 @@ class GeminiClient:
             VERİ BAĞLLAMI:
             {context} 
             ---
-            Kullanıcının Sorusu:
         """
         
-        # Payload oluştur
         payload = {
-            "contents": [{"role": "user", "parts": [{"text": system_instruction + question}]}],
+            # Yeni Gemini API'da, sistem talimatı 'contents' dışına konulur.
+            "contents": [{"role": "user", "parts": [{"text": "Kullanıcının Sorusu: " + question}]}],
             "config": {
                 "systemInstruction": system_instruction,
                 "maxOutputTokens": Config.MAX_RESPONSE_TOKENS
@@ -89,38 +91,32 @@ class GeminiClient:
             r.raise_for_status()
             data = r.json()
             
-            # API yanıtını güvenli şekilde çöz
             if "candidates" in data and data["candidates"]:
                 content = data["candidates"][0].get("content", {})
                 if "parts" in content and content["parts"]:
                     return content["parts"][0].get("text", "Gemini'den yanıt alınamadı.")
             return "Gemini'den geçerli bir yanıt gelmedi."
 
-        except requests.exceptions.HTTPError as http_err:
-            logging.error(f"❌ Gemini HTTP hatası: {http_err} - {r.text}")
-            return f"API Hatası: HTTP {r.status_code}."
         except Exception as e:
-            logging.error(f"❌ Gemini API genel hatası: {e}")
-            return "Gemini API bağlantı hatası."
+            logging.error(f"❌ Gemini API hatası: {e}")
+            return f"API Hatası: İşlem sırasında hata oluştu ({type(e).__name__})."
 
 # --- 4. PSİKOTERAPİ ASİSTANI (Ana Orkestratör) ---
 class PsychotherapyAssistant:
     def __init__(self, cfg: Config):
         self.cfg = cfg
-        # Bellek aşımı riskini azaltmak için Embedding Modelini burada yüklüyoruz.
+        # Kritik Adımlar: Bellek tüketim sırasına göre
         self.embedder = EmbeddingService(cfg.EMBEDDING_MODEL) 
         self.gemini = GeminiClient(cfg.GEMINI_API_KEY)
+        self.documents = self._load_psychotherapy_data() # Veri yüklenir
         self.pinecone_index = self._setup_pinecone()
-        self.documents = self._load_psychotherapy_data()
         self._load_dataset_to_pinecone() # İndeks boşsa yükleme yapar
 
-    # Sizin load_psychotherapy_data fonksiyonunuz (Değişmedi)
     def _load_psychotherapy_data(self):
+        # Orijinal Veri Yükleme Fonksiyonunuzun sadeleştirilmiş hali
         DATASET_NAME = "Psychotherapy-LLM/CBT-Bench"
         SUBSET_NAME = "core_fine_test" 
         logging.info(f"🔄 **1. Veri Yükleme:** Hugging Face '{DATASET_NAME}' yükleniyor...")
-        # Hafıza problemini azaltmak için "streaming=True" denenebilir, 
-        # ancak burada tüm datayı RAM'e alıyoruz.
         try:
             dataset = load_dataset(DATASET_NAME, SUBSET_NAME, split="train") 
         except Exception as e:
@@ -129,7 +125,6 @@ class PsychotherapyAssistant:
 
         documents = []
         for i, row in enumerate(dataset):
-             # ... (Veri temizleme mantığı aynı) ...
             situation = row.get('situation')
             thoughts = row.get('thoughts')
             core_belief = row.get('core_belief_fine_grained') 
@@ -147,8 +142,8 @@ class PsychotherapyAssistant:
         logging.info(f"✅ **1. Veri Yükleme Tamamlandı:** Toplam {len(documents)} doküman yüklendi.")
         return documents
 
-    # Referans projedeki setup mantığı (Pinecone Client)
     def _setup_pinecone(self):
+        # Pinecone bağlantı ve indeks oluşturma mantığı
         if not self.cfg.PINECONE_API_KEY: 
             logging.warning("⚠️ PINECONE_API_KEY eksik. Retrieval devre dışı.")
             return None
@@ -172,8 +167,8 @@ class PsychotherapyAssistant:
             logging.error(f"❌ HATA (Pinecone): Başlatılamadı. {e}")
             return None
 
-    # Referans projedeki yükleme mantığı
     def _load_dataset_to_pinecone(self):
+        # Koşullu yükleme mantığı
         if not self.pinecone_index: return
         
         vector_count = self.pinecone_index.describe_index_stats().get("total_vector_count", 0)
@@ -186,26 +181,25 @@ class PsychotherapyAssistant:
         vectors = []
         try:
             for i, doc in enumerate(tqdm(self.documents)):
-                # Embedding'i oluştur ve listeye ekle
                 vectors.append((
                     doc["id"], 
                     self.embedder.embed(doc["content"]), 
-                    {"text": doc["content"]} # Metadata sadece text'i tutsun
+                    {"text": doc["content"]}
                 ))
                 
                 if len(vectors) >= self.cfg.BATCH_SIZE:
                     self.pinecone_index.upsert(vectors=vectors)
-                    vectors = [] # Batch temizle
+                    vectors = []
             
-            if vectors: # Kalanları yükle
+            if vectors:
                 self.pinecone_index.upsert(vectors=vectors)
 
             logging.info(f"✅ **4b. İndeksleme Tamamlandı.**")
         except Exception as e:
             logging.error(f"❌ HATA (Veri Yükleme/Upsert): {e}")
 
-    # RAG sorgu mantığı (Referans projedeki gibi, manuel olarak)
     def get_answer(self, question: str):
+        # RAG (Retrieval) Mantığı
         if not question:
             return "Lütfen bir soru girin."
 
@@ -213,17 +207,15 @@ class PsychotherapyAssistant:
         
         try:
             if self.pinecone_index:
-                # 1. Sorgu Embedding'i
                 query_emb = self.embedder.embed(question)
                 
-                # 2. Pinecone Sorgusu
                 res = self.pinecone_index.query(
                     vector=query_emb, 
                     top_k=self.cfg.K_RETRIEVAL, 
                     include_metadata=True
                 )
                 
-                # 3. Bağlam Oluşturma (Sadece skor > 0.6 olanları alalım)
+                # Sadece iyi eşleşen (0.6 üstü) dokümanları al
                 relevant_texts = [
                     m['metadata'].get('text', '') 
                     for m in res['matches'] 
@@ -232,14 +224,11 @@ class PsychotherapyAssistant:
                 
                 if relevant_texts:
                     context = "\n---\n".join(relevant_texts)
-                    logging.info("🔍 Pinecone'dan bağlam bulundu.")
-                else:
-                    logging.info("🔍 Pinecone'da yüksek skorlu bağlam bulunamadı.")
             
-            # 4. LLM Yanıtı
+            # LLM (Generation) Mantığı
             return self.gemini.generate(question, context)
 
-        except RuntimeError as e: # Embedding hatası
+        except RuntimeError as e:
             logging.error(f"❌ RAG Runtime Hatası: {e}")
             return "Hata: Embedding modelini kullanamıyorum. Sunucu loglarını kontrol edin."
         except Exception as e:
@@ -250,14 +239,17 @@ class PsychotherapyAssistant:
 # --- 5. FLASK APP ---
 app = Flask(__name__)
 
-# Global asistan objesi (Gunicorn'da tekil kalacaktır)
+# Global asistan objesi: Uygulama başlatılırken sadece bir kez kurulur.
 try:
     cfg = Config()
     assistant = PsychotherapyAssistant(cfg)
+    logging.info("==================================================")
     logging.info("✅ **5. RAG Zinciri Kurulumu Tamamlandı!** Bot kullanıma hazır.")
+    logging.info("==================================================")
 except Exception as startup_error:
-    logging.error(f"\n!!!! KRİTİK BAŞLANGIÇ HATASI !!!!\nMesaj: {startup_error}")
-    # Başarısız olursa 'assistant' değişkenini None bırakabiliriz veya bir Mock obje atayabiliriz.
+    logging.error(f"\n!!!! KRİTİK BAŞLANGIÇ HATASI (502) !!!!")
+    logging.error(f"Mesaj: {startup_error}")
+    # Hata durumunda assistant'ı None bırakarak '/ask' endpoint'inde 500 hatası dönülmesini sağlarız.
     assistant = None 
 
 @app.route("/")
@@ -267,6 +259,7 @@ def index():
 @app.route("/ask", methods=["POST"])
 def ask_question():
     if assistant is None:
+        # Başlangıçta başarısız olursa istemciye bilgi verilir.
         return jsonify({"answer": "Error: RAG Chain initialization failed. Please check server logs for setup errors."}), 500
         
     data = request.get_json()
@@ -292,5 +285,5 @@ def ask_question():
 
 
 if __name__ == "__main__":
-    # Render'ın verdiği PORT değişkenini al
-    app.run(host="0.0.0.0", port=5000)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
