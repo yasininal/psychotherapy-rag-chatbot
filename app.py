@@ -55,7 +55,7 @@ class EmbeddingService:
 class GeminiClient:
     BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 
-    def __init__(self, api_key: str, model_name: str = "gemini-2.5-flash"):
+    def __init__(self, api_key: str, model_name: str = "gemini-2.0-flash"):
         self.api_key = api_key
         self.model = model_name
         self.headers = {"Content-Type": "application/json"}
