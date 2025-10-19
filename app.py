@@ -11,17 +11,9 @@ import traceback
 from pinecone import Pinecone, ServerlessSpec 
 from sentence_transformers import SentenceTransformer 
 
-# 🚨 KRİTİK BELLEK OPTİMİZASYONU: SADECE CPU'YU ZORLA
-# Bu, PyTorch'un GPU bileşenlerini yüklemesini engeller ve RAM kullanımını azaltır.
-os.environ['TRANSFORMERS_NO_ADVICE'] = '1'
-os.environ['CUDA_VISIBLE_DEVICES'] = '-1' 
-os.environ['NO_GPUTILS'] = '1' 
-
-# Gerekirse, PyTorch'un düşük bellekli modunu zorlamak için bu eklenebilir
-# import torch
-# torch.set_num_threads(1) 
-
 # --- 1. LOGGING VE CONFIG ---
+# KOD DÜZENİ: Arkadaşınızın kodunda ENV ayarlarına ihtiyaç duymadığı için 
+# os.environ['...'] ayarlarını kaldırıyoruz, çünkü gereksinimin.txt bunu çözüyor.
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 load_dotenv()
@@ -32,7 +24,7 @@ class Config:
     PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX", "psychotherapy-rag")
     PINECONE_ENV = os.getenv("PINECONE_ENV", "us-east-1") 
     
-    # EN HAFİF MODELLERDEN BİRİ (Boyut 384)
+    # BELLEK OPTİMİZASYONU: Daha hafif model, ancak boyut aynı kalır.
     EMBEDDING_MODEL = "sentence-transformers/paraphrase-MiniLM-L3-v2" 
     EMBEDDING_DIM = 384
     
@@ -40,25 +32,25 @@ class Config:
     BATCH_SIZE = 100
     K_RETRIEVAL = 3 
 
-# --- 2. EMBEDDING SERVİSİ (Hafif Model Yüklemesi) ---
+# --- 2. EMBEDDING SERVİSİ ---
 class EmbeddingService:
     def __init__(self, model_name: str):
         self.model = None
         logging.info(f"🔄 **2. Embedding Modeli:** '{model_name}' yükleniyor...")
         try:
-            # Bellek optimizasyonlu model yüklemesi
+            # Model, STransformer ile yüklenir. requirements.txt sayesinde CPU'da kalacaktır.
             self.model = SentenceTransformer(model_name)
-            logging.info("✅ **2. Embedding Modeli Tamamlandı (CPU).**")
+            logging.info("✅ **2. Embedding Modeli Tamamlandı (CPU zorunlu).**")
         except Exception as e:
             logging.error(f"❌ HATA (Embedding): Model yüklenirken hata oluştu. {e}")
-            raise RuntimeError("Embedding modeli yüklenemedi. Bellek limitini kontrol edin.")
+            raise RuntimeError("Embedding modeli yüklenemedi. requirements.txt ve bellek limitini kontrol edin.")
 
     def embed(self, text: str):
         if not self.model:
             raise RuntimeError("Embedding modeli yüklenmedi.")
         return self.model.encode(text).tolist()
 
-# --- 3. GEMINI MÜŞTERİSİ (Değişmedi) ---
+# --- 3. GEMINI MÜŞTERİSİ (Sizin BDT mantığınızla birleştirildi) ---
 class GeminiClient:
     BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 
@@ -106,7 +98,7 @@ class GeminiClient:
             logging.error(f"❌ Gemini API hatası: {e}")
             return f"API Hatası: İşlem sırasında hata oluştu ({type(e).__name__})."
 
-# --- 4. PSİKOTERAPİ ASİSTANI (RAG Mantığı Değişmedi) ---
+# --- 4. PSİKOTERAPİ ASİSTANI (RAG Mantığı) ---
 class PsychotherapyAssistant:
     def __init__(self, cfg: Config):
         self.cfg = cfg
@@ -117,12 +109,10 @@ class PsychotherapyAssistant:
         self._load_dataset_to_pinecone() 
 
     def _load_psychotherapy_data(self):
-        # Hugging Face veri seti yükleme ve temizleme mantığı (Bellek aşımına rağmen korunur)
         DATASET_NAME = "Psychotherapy-LLM/CBT-Bench"
         SUBSET_NAME = "core_fine_test" 
         logging.info(f"🔄 **1. Veri Yükleme:** Hugging Face '{DATASET_NAME}' yükleniyor...")
         try:
-            # Bu kısım hala potansiyel bir bellek tüketicisidir.
             dataset = load_dataset(DATASET_NAME, SUBSET_NAME, split="train") 
         except Exception as e:
             logging.error(f"❌ HATA (Veri Yükleme): Hugging Face yüklenemedi. Hata: {e}")
@@ -247,10 +237,8 @@ try:
     logging.info("✅ **5. RAG Zinciri Kurulumu Tamamlandı!** Bot kullanıma hazır.")
     logging.info("==================================================")
 except Exception as startup_error:
-    # Bu hata, Gunicorn'a fırlatılacak ve 502/503 hatası verecektir.
     logging.error(f"\n!!!! KRİTİK BAŞLANGIÇ HATASI (502) !!!!")
     logging.error(f"Mesaj: {startup_error}")
-    # traceback.print_exc() # Detaylı hata için
     assistant = None 
 
 @app.route("/")
