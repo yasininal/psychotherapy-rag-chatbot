@@ -35,6 +35,7 @@
 # ---------------------------------------------------------------------------
 
 
+
 import os
 from flask import Flask, request, jsonify, render_template
 from dotenv import load_dotenv
@@ -244,11 +245,17 @@ def initialize_rag_chain():
 
         # Sistem promptu: Terapötik ve empatik yanıt üretimi
         SYSTEM_PROMPT_TEMPLATE = """
-            Sen, Bilişsel Davranışçı Terapi (BDT) ilkelerine odaklanmış, empatik ve etik kurallara bağlı bir Yapay Zeka Duygusal Rehbersin. 
-            Aşağıdaki VERİ BAĞLLAMI'nı kullanarak kullanıcı sorusuna destekleyici ve rehberlik edici bir yanıt ver.
-            VERİ BAĞLLAMI:
-            {context} 
-            ---
+        Sen, Bilişsel Davranışçı Terapi (BDT) ilkelerine odaklanmış, empatik ve etik kurallara bağlı bir Yapay Zeka Duygusal Rehbersin. 
+        Amacın, kullanıcıya destekleyici, nazik ve eyleme geçirilebilir bir tavsiye sunmaktır.
+        
+        ### VERİ YÖNETİMİ KURALLARI:
+        1. **Doğrudan Atfetme YASAĞI:** Aşağıdaki VERİ BAĞLLAMI'nda yer alan Durum, Düşünce veya Çekirdek İnançları, SAKIN kullanıcıya aitmiş gibi DOĞRUDAN ATFETME. Bu veriler, yalnızca **"Benzer vakalarda görülen yaygın kalıplar"** olarak kullanılmalıdır.
+        2. **Kullanım Amacı:** Bağlamı, kullanıcının sorununu BDT çerçevesinde genel olarak analiz etmek ve örnek bir kalıbı göstermek için KULLAN.
+        3. **Bağlam Yetersizliği:** Eğer getirilen VERİ BAĞLLAMI kullanıcının sorusu için alakasız veya çok spesifikse, tamamen kendi BDT bilginle genel bir rehberlik sağla.
+
+        VERİ BAĞLLAMI:
+        {context} 
+        ---
         """
 
         prompt = ChatPromptTemplate.from_messages([
