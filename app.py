@@ -1,3 +1,40 @@
+# ---------------------------------------------------------------------------
+# Proje: Kariyer Rehberi Sohbet Botu (Career Guide Chatbot)
+#
+# Amaç:
+# - Bu uygulama, RAG (Retrieval-Augmented Generation) mimarisiyle çalışan
+#   bir sohbet botu örneğidir. Kullanıcılardan gelen kariyerle ilgili
+#   soruları yanıtlamak için halka açık bir Soru-Cevap veri kümesini ve
+#   Gemini dil modelini kullanır.
+#
+# Genel Yapı:
+# - Uygulama, kullanıcının sorusuna en uygun yanıtı üretmek için önce
+#   vektör benzerliğiyle ilgili verileri Pinecone üzerinden geri getirir
+#   (retrieval), ardından bu verileri Gemini LLM ile birleştirerek
+#   doğal dilde yanıt oluşturur (generation).
+#
+# Temel Bileşenler:
+# - EmbeddingService: Yerel olarak çalışan "sentence-transformers/all-MiniLM-L6-v2"
+#   modelini kullanarak metinleri sayısal vektörlere dönüştürür.
+# - GeminiClient: Google Gemini API’sine istek gönderen yardımcı sınıf.
+# - Pinecone Entegrasyonu: Vektör benzerliği tabanlı sorgulama için kullanılır.
+# - CareerAssistant: Geri getirme (retrieval) ve yanıt üretme (generation)
+#   işlemlerini yöneten ana bileşendir.
+#
+# Notlar:
+# - Uygulama CPU üzerinde çalışacak şekilde optimize edilmiştir; GPU zorunlu değildir.
+# - Ortam değişkenleri (.env dosyasında) üzerinden API anahtarları ayarlanmalıdır.
+# - Gerçek bir LLM erişimi olmadan da demo amaçlı çalışacak şekilde tasarlanmıştır.
+#
+# Dağıtım (Deploy) Bilgisi:
+# - Kod Flask tabanlı bir web uygulaması olarak yapılandırılmıştır.
+# - Render, Railway veya benzeri platformlarda doğrudan çalıştırılabilir.
+# - Gerekli bağımlılıklar requirements.txt dosyasında listelenmiştir.
+#
+# Detaylı kullanım, mimari açıklama ve veri kümesi bilgileri için README.md dosyasına bakınız.
+# ---------------------------------------------------------------------------
+
+
 import os
 from flask import Flask, request, jsonify, render_template
 from dotenv import load_dotenv
