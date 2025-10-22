@@ -281,7 +281,7 @@ def initialize_rag_chain():
 try:
     print("==================================================")
     print("🚀 Flask RAG Psikoterapi Botu Başlatılıyor...")
-    # initialize_rag_chain()
+    #  initialize_rag_chain()
     print("==================================================")
 
 except Exception as startup_error:
@@ -325,6 +325,7 @@ def ask_question():
             }), 500
 
         return jsonify({"answer": answer})
+    
 
     except Exception as e:
         print(f"❌ **HATA:** Sorgu sırasında hata oluştu.")
