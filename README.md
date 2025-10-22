@@ -1,6 +1,7 @@
 # 💬 AI Duygusal Rehber: BDT Odaklı RAG Chatbot
 
 Bu proje, Hugging Face'teki profesyonel bir psikoterapi veri seti üzerine kurulu, **Retrieval-Augmented Generation (RAG)** mimarisini kullanan, Bilişsel Davranışçı Terapi (BDT) ilkelerine dayalı empatik bir sohbet robotudur.
+[Psychotherapy Chat Bot](https://psychotherapy-rag-chatbot.onrender.com/)
 
 Amaç, Büyük Dil Modelinin (LLM) genel bilgiler yerine, yüksek kaliteli terapötik kayıtlardan edindiği bağlamı kullanarak daha güvenilir, tutarlı ve yapılandırılmış (Empati, Analiz, Öneri) yanıtlar üretmektir.
 
