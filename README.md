@@ -97,6 +97,8 @@ Chat arayüzünde duygu ve sorunlarınızı yazın.
 
 Bot, Pinecone'daki terapötik kayıtlara dayanarak yapılandırılmış (Empati, Analiz, Öneri) yanıtını sunacaktır.
 
+![Image](https://github.com/user-attachments/assets/e8261cf7-b78c-46e9-99e6-dcf1fd986f0e)
+
 ---
 
 🤝 Katkıda Bulunma
