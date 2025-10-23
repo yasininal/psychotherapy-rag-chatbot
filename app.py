@@ -281,7 +281,7 @@ def initialize_rag_chain():
 try:
     print("==================================================")
     print("🚀 Flask RAG Psikoterapi Botu Başlatılıyor...")
-    #  initialize_rag_chain()
+    initialize_rag_chain()
     print("==================================================")
 
 except Exception as startup_error:
@@ -299,33 +299,32 @@ def index():
 
 # Soru-cevap endpoint’i
 @app.route("/ask", methods=["POST"])
-@app.route("/ask", methods=["POST"])
 def ask_question():
+    """Kullanıcı sorusunu alır, RAG zincirini çalıştırır, yanıt döndürür."""
     global qa_chain
+    
+    if qa_chain is None:
+        return jsonify({"answer": "RAG Chain başlatılamadı. Sunucu loglarını kontrol edin."}), 500
+        
+    data = request.get_json()
+    query = data.get("question")
+    
+    if not query:
+        return jsonify({"answer": "Lütfen bir soru gönderin."}), 400
 
     try:
-        data = request.get_json()
-        query = data.get("question")
-
-        if not query:
-            return jsonify({"answer": "Lütfen bir soru gönderin."}), 400
-
-        # ⚙️ Zincir ilk kez çalıştırılıyorsa burada başlat
-        if qa_chain is None:
-            print("🔧 RAG Chain başlatılıyor (ilk istek)...")
-            initialize_rag_chain()
-
-        print(f"🔄 Sorgu alındı: {query[:60]}...")
+        print(f"🔄 **Sorgu İşleniyor:** '{query[:50]}...'")
         response = qa_chain.invoke({"input": query})
         answer = response.get("answer")
-
+        
         if not answer:
+            print("⚠️ Gemini yanıt üretmedi. Context kontrol ediliyor...")
             return jsonify({
-                "answer": "Yapay zeka anlamlı bir yanıt üretemedi. Lütfen soruyu yeniden formüle edin."
+                "answer": "Yapay zeka anlamlı bir yanıt oluşturamadı. Lütfen soruyu yeniden formüle edin."
             }), 500
-
+        
+        print("✅ **Yanıt Üretildi:** Başarılı.")
         return jsonify({"answer": answer})
-    
 
     except Exception as e:
         print(f"❌ **HATA:** Sorgu sırasında hata oluştu.")
