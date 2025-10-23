@@ -1,40 +1,12 @@
 # ---------------------------------------------------------------------------
-# Proje: Kariyer Rehberi Sohbet Botu (Career Guide Chatbot)
+# Proje: Kariyer Rehberi Sohbet Botu (Career Guide Chatbot) - OPTİMİZE EDİLMİŞ VERSİYON
 #
 # Amaç:
-# - Bu uygulama, RAG (Retrieval-Augmented Generation) mimarisiyle çalışan
-#   bir sohbet botu örneğidir. Kullanıcılardan gelen kariyerle ilgili
-#   soruları yanıtlamak için halka açık bir Soru-Cevap veri kümesini ve
-#   Gemini dil modelini kullanır.
-#
-# Genel Yapı:
-# - Uygulama, kullanıcının sorusuna en uygun yanıtı üretmek için önce
-#   vektör benzerliğiyle ilgili verileri Pinecone üzerinden geri getirir
-#   (retrieval), ardından bu verileri Gemini LLM ile birleştirerek
-#   doğal dilde yanıt oluşturur (generation).
-#
-# Temel Bileşenler:
-# - EmbeddingService: Yerel olarak çalışan "sentence-transformers/all-MiniLM-L6-v2"
-#   modelini kullanarak metinleri sayısal vektörlere dönüştürür.
-# - GeminiClient: Google Gemini API’sine istek gönderen yardımcı sınıf.
-# - Pinecone Entegrasyonu: Vektör benzerliği tabanlı sorgulama için kullanılır.
-# - CareerAssistant: Geri getirme (retrieval) ve yanıt üretme (generation)
-#   işlemlerini yöneten ana bileşendir.
-#
-# Notlar:
-# - Uygulama CPU üzerinde çalışacak şekilde optimize edilmiştir; GPU zorunlu değildir.
-# - Ortam değişkenleri (.env dosyasında) üzerinden API anahtarları ayarlanmalıdır.
-# - Gerçek bir LLM erişimi olmadan da demo amaçlı çalışacak şekilde tasarlanmıştır.
-#
-# Dağıtım (Deploy) Bilgisi:
-# - Kod Flask tabanlı bir web uygulaması olarak yapılandırılmıştır.
-# - Render, Railway veya benzeri platformlarda doğrudan çalıştırılabilir.
-# - Gerekli bağımlılıklar requirements.txt dosyasında listelenmiştir.
-#
-# Detaylı kullanım, mimari açıklama ve veri kümesi bilgileri için README.md dosyasına bakınız.
+# - Bu uygulama, RAG mimarisiyle çalışan bir sohbet botu örneğidir. 
+# - Bellek kısıtlamalı ortamlar (Render vb.) için embedding modelinin
+#   yüklenmesi (HuggingFaceEmbeddings yerine doğrudan SentenceTransformer) 
+#   optimize edilmiştir.
 # ---------------------------------------------------------------------------
-
-
 
 import os
 from flask import Flask, request, jsonify, render_template
@@ -55,10 +27,9 @@ os.environ['NO_GPUTILS'] = '1'
 # ==========================================================
 # 🔗 LangChain, Pinecone ve Gemini Modül Bağlantıları
 # ==========================================================
+# SentenceTransformer: Bellek optimizasyonu için doğrudan embedding modeli
+from sentence_transformers import SentenceTransformer 
 # LangChain: Zincir tabanlı LLM entegrasyon framework’ü
-# Pinecone: Vektör veritabanı
-# Gemini: Google Generative AI LLM modeli
-from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_pinecone import Pinecone as LangchainPinecone
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.chains import create_retrieval_chain
@@ -81,12 +52,45 @@ load_dotenv()
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY") 
 GEMINI_API_KEY = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY") 
 PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX", "psychotherapy-rag") 
-EMBEDDING_DIM = 384  # all-MiniLM-L6-v2 modeline uygun embedding boyutu
-MAX_RESPONSE_TOKENS = 4096  # Gemini’nin maksimum çıktı uzunluğu
+EMBEDDING_DIM = 384 # all-MiniLM-L6-v2 modeline uygun embedding boyutu
+MAX_RESPONSE_TOKENS = 4096 # Gemini’nin maksimum çıktı uzunluğu
 
 # Global değişkenler (zincir durumu burada tutulur)
 qa_chain = None
 retriever = None
+
+# ==========================================================
+# ⚡️ OPTİMİZE EDİLMİŞ EMBEDDING ADAPTÖRÜ
+# ==========================================================
+class OptimizedEmbeddingsAdapter:
+    """
+    LangChain'in beklediği arayüze uymak için basit bir adaptör.
+    Bellek optimizasyonu için HuggingFaceEmbeddings yerine doğrudan 
+    SentenceTransformer modelini CPU'da yükler ve kullanır.
+    """
+    def __init__(self, model_name: str):
+        print(f"   [Optimizasyon] SentenceTransformer '{model_name}' CPU'ya yükleniyor...")
+        # Modeli zorla CPU'ya yükleme, bellek (RAM) kullanımını düşürür.
+        self.model = SentenceTransformer(model_name, device='cpu')
+
+    def embed_documents(self, texts):
+        # Pinecone toplu yüklemesi (upsert) ve retrieve için metot
+        # normalize_embeddings=True, Cosine benzerliği için zorunludur.
+        return self.model.encode(
+            texts, 
+            convert_to_numpy=True, 
+            normalize_embeddings=True
+        ).tolist()
+
+    def embed_query(self, text):
+        # LangchainPinecone.from_existing_index'in ihtiyaç duyduğu metot
+        return self.model.encode(
+            text, 
+            convert_to_numpy=True, 
+            normalize_embeddings=True
+        ).tolist()
+# ---------------------------------------------------------
+
 
 # ==========================================================
 # 🧩 0️⃣ Veri Yükleme Fonksiyonu (CBT-Bench Dataset)
@@ -145,7 +149,7 @@ def initialize_rag_chain():
     """
     RAG pipeline’ını kurar:
     - Veri kümesini yükler
-    - all-MiniLM-L6-v2 modelinden embedding üretir
+    - all-MiniLM-L6-v2 modelinden embedding üretir (Optimize)
     - Pinecone’a yükler veya var olan indeksi bağlar
     - Gemini LLM’i retriever zinciriyle bağlar
     """
@@ -162,16 +166,14 @@ def initialize_rag_chain():
     
     TOTAL_DOCUMENT_COUNT = len(documents)
     
-    # 2️⃣ Embedding Modeli (all-MiniLM-L6-v2)
+    # 2️⃣ Embedding Modeli (all-MiniLM-L6-v2) - OPTİMİZASYON BÖLÜMÜ
     MODEL_NAME_OPTIMIZED = "sentence-transformers/all-MiniLM-L6-v2"
-    print(f"🔄 **2. Embedding Modeli:** '{MODEL_NAME_OPTIMIZED}' yükleniyor (CPU modunda)...")
+    print(f"🔄 **2. Embedding Modeli:** '{MODEL_NAME_OPTIMIZED}' yükleniyor (CPU/Optimize)...")
 
     try:
-        embeddings = HuggingFaceEmbeddings(
-            model_name=MODEL_NAME_OPTIMIZED,
-            model_kwargs={'device': 'cpu'}  # GPU yerine CPU kullan
-        )
-        print("✅ **2. Embedding Modeli Başarıyla Yüklendi.**")
+        # LangChain HuggingFaceEmbeddings yerine, bellek optimizasyonu için kendi adaptörümüzü kullanıyoruz.
+        embeddings = OptimizedEmbeddingsAdapter(MODEL_NAME_OPTIMIZED)
+        print("✅ **2. Embedding Modeli Başarıyla Yüklendi (Optimize).**")
     except Exception as e:
         raise Exception(f"HATA (Embedding): Model yüklenirken hata oluştu. {e}")
 
@@ -188,16 +190,20 @@ def initialize_rag_chain():
         # Eğer indeks zaten varsa, tekrar yüklememek için kontrol et
         if index_exists:
             current_index = pc.Index(index_name)
-            vector_count = current_index.describe_index_stats().get('total_vector_count', 0)
+            # Index stats ile mevcut vektör sayısını al
+            stats = current_index.describe_index_stats()
+            vector_count = stats.get('total_vector_count', 0)
             
-            if vector_count > 0:
-                print(f"✅ '{index_name}' indeksi {vector_count} vektöre sahip. Yeniden yükleme atlandı.")
+            if vector_count >= TOTAL_DOCUMENT_COUNT:
+                print(f"✅ '{index_name}' indeksi yeterli vektöre ({vector_count}) sahip. Yeniden yükleme atlandı.")
                 should_upsert = False
+            elif vector_count > 0:
+                print(f"⚠️ İndeks mevcut ama eksik ({vector_count}/{TOTAL_DOCUMENT_COUNT}). Yeniden yükleme başlatılıyor.")
             else:
                 print(f"⚠️ İndeks mevcut ama boş. Yeniden yükleme başlatılıyor.")
         else:
             # İndeks yoksa yeni oluştur
-            print(f"⚠️ '{index_name}' bulunamadı. Yeni indeks oluşturuluyor...")
+            print(f"⚠️ '{index_name}' bulunamadı. Yeni Serverless indeks oluşturuluyor...")
             pc.create_index(
                 name=index_name,
                 dimension=EMBEDDING_DIM,
@@ -206,14 +212,17 @@ def initialize_rag_chain():
             )
             current_index = pc.Index(index_name) 
         
-        # 4️⃣ Verileri Pinecone’a yükle
+        # 4️⃣ Verileri Pinecone’a yükle (Upsert)
         if should_upsert:
             print(f"🔄 **4. Vektör Yükleme:** {TOTAL_DOCUMENT_COUNT} belge Pinecone’a aktarılıyor...")
             batch_size = 100
             for i in tqdm(range(0, TOTAL_DOCUMENT_COUNT, batch_size)):
                 batch = documents[i:min(i + batch_size, TOTAL_DOCUMENT_COUNT)]
                 texts = [doc.page_content for doc in batch]
-                vectors = embeddings.embed_documents(texts)
+                
+                # OptimizedEmbeddingsAdapter'ın metodu kullanılıyor
+                vectors = embeddings.embed_documents(texts) 
+                
                 to_upsert = [(str(doc.metadata['id']), vectors[j], doc.metadata) 
                              for j, doc in enumerate(batch)]
                 current_index.upsert(vectors=to_upsert)
@@ -225,6 +234,7 @@ def initialize_rag_chain():
         print(f"✨ Pinecone İndeks Durumu: {final_vector_count} toplam vektör mevcut.")
         
         # LangChain için retriever oluştur
+        # Özel adaptörümüz (embeddings), LangChain arayüzüne uyduğu için sorunsuz kullanılır.
         vector_store = LangchainPinecone.from_existing_index(
             index_name=index_name,
             embedding=embeddings
@@ -295,6 +305,7 @@ except Exception as startup_error:
 @app.route("/")
 def index():
     """Ana sayfayı (HTML arayüzü) döndürür."""
+    # NOTE: index.html dosyasının uygulamanın "templates" klasöründe olması gerekir.
     return render_template("index.html")
 
 # Soru-cevap endpoint’i
@@ -304,6 +315,7 @@ def ask_question():
     global qa_chain
     
     if qa_chain is None:
+        # Hata durumunda (eğer startup_error yakalanmışsa)
         return jsonify({"answer": "RAG Chain başlatılamadı. Sunucu loglarını kontrol edin."}), 500
         
     data = request.get_json()
@@ -314,6 +326,8 @@ def ask_question():
 
     try:
         print(f"🔄 **Sorgu İşleniyor:** '{query[:50]}...'")
+        
+        # RAG zincirini çalıştırma
         response = qa_chain.invoke({"input": query})
         answer = response.get("answer")
         
